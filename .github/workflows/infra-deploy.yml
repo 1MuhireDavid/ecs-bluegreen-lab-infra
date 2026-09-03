@@ -1,0 +1,70 @@
+name: "Deploy infra stack directly (Git sync fallback)"
+
+# Manual fallback for creating/updating the ecs-bluegreen-lab stack via the
+# CLI. CloudFormation Git sync's auto-changeset creation has repeatedly
+# failed validation ("Parameters: [...] must have values") for reasons not
+# visible from the repo side, even after confirming deployment-file.yaml
+# has every required parameter set correctly. This workflow reads that same
+# deployment-file.yaml (it stays the single source of truth for stack
+# parameters) and deploys with `aws cloudformation deploy` instead, so you
+# get real error output in the Actions log rather than the opaque Git sync
+# console message.
+#
+# Deliberately workflow_dispatch-only (not push-triggered) since the role
+# this uses has broad permissions (see cfn/bootstrap/00-bootstrap.yaml) --
+# run it by hand from the Actions tab when you want to (re)deploy.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write   # required for OIDC -> AWS
+  contents: read
+
+env:
+  CFN_DIR: cfn
+  STACK_NAME: ecs-bluegreen-lab
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_INFRA_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Build --parameter-overrides from deployment-file.yaml
+        id: params
+        run: |
+          python3 - "${CFN_DIR}/deployment-file.yaml" <<'PY' >> "$GITHUB_OUTPUT"
+          import shlex
+          import sys
+
+          import yaml
+
+          with open(sys.argv[1]) as f:
+              doc = yaml.safe_load(f)
+
+          pairs = [f"{k}={v}" for k, v in (doc.get("parameters") or {}).items()]
+          print("overrides=" + " ".join(shlex.quote(p) for p in pairs))
+          PY
+
+      - name: Deploy stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name "${STACK_NAME}" \
+            --template-file "${CFN_DIR}/root.yaml" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides ${{ steps.params.outputs.overrides }}
+
+      - name: Summary
+        run: |
+          echo "### Deployed \`${STACK_NAME}\` directly via CLI" >> "$GITHUB_STEP_SUMMARY"

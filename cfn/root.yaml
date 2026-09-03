@@ -1,0 +1,181 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  ROOT STACK - deployed by CloudFormation Git sync. Wires together the
+  nested stacks that make up the ECS Fargate blue/green CI/CD lab:
+    01-network.yaml       Multi-AZ VPC, public/private subnets, NAT
+    02-security.yaml      Least-privilege security groups
+    03-ecr-endpoints.yaml ECR repo + private VPC endpoints
+    04-alb-ecs.yaml       Public ALB, ECS cluster/service, auto scaling
+    05-cicd-pipeline.yaml CodePipeline + CodeDeploy blue/green + EventBridge
+  Nested templates are pulled from S3 (see TemplatesBucketName /
+  TemplatesVersion below) rather than embedded here, per the lab's
+  "host nested templates in S3" requirement, and so Git sync (which
+  deploys this single file as-is, with no local packaging step) can
+  still resolve child templates.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ecs-bluegreen-lab
+
+  # --- Nested template hosting (see README.md "How nested
+  #     templates get to S3" for why this two-parameter indirection
+  #     exists) ---
+  TemplatesBucketName:
+    Type: String
+    Description: S3 bucket created by the bootstrap stack (00-bootstrap.yaml)
+
+  TemplatesVersion:
+    Type: String
+    Description: >
+      Git short-SHA the infra repo's GitHub Action stamped into the S3 key
+      prefix on last push. Bumping this parameter is what makes Git sync
+      pick up nested-template-only changes (see deployment-file.yaml).
+
+  # --- Networking ---
+  VpcCIDR: { Type: String, Default: 10.20.0.0/16 }
+  PublicSubnet1CIDR: { Type: String, Default: 10.20.0.0/24 }
+  PublicSubnet2CIDR: { Type: String, Default: 10.20.1.0/24 }
+  PrivateSubnet1CIDR: { Type: String, Default: 10.20.10.0/24 }
+  PrivateSubnet2CIDR: { Type: String, Default: 10.20.11.0/24 }
+  SingleNatGateway: { Type: String, Default: "true", AllowedValues: ["true", "false"] }
+
+  # --- Application / ECS ---
+  ContainerPort: { Type: Number, Default: 8080 }
+  InitialImageTag: { Type: String, Default: bootstrap }
+  TaskCpu: { Type: String, Default: "256" }
+  TaskMemory: { Type: String, Default: "512" }
+  MinTasks: { Type: Number, Default: 1 }
+  DesiredTasks: { Type: Number, Default: 1 }
+  MaxTasks: { Type: Number, Default: 4 }
+  CpuTargetPercent: { Type: Number, Default: 60 }
+  AppOwnerName:
+    Type: String
+    Description: Your full name, shown on the landing page
+  LabName:
+    Type: String
+    Default: "ECS Fargate Blue/Green CI/CD Lab"
+
+  # --- CI/CD wiring ---
+  GitHubOrg:
+    Type: String
+  AppRepoName:
+    Type: String
+    Default: ecs-bluegreen-lab-app
+    Description: The separate app repo -- source of ecs/appspec.yaml and ecs/taskdef.json
+  AppRepoBranch:
+    Type: String
+    Default: main
+  DeployedImageTag:
+    Type: String
+    Default: latest
+
+Resources:
+
+  NetworkStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${TemplatesBucketName}.s3.${AWS::Region}.amazonaws.com/templates/${TemplatesVersion}/01-network.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        VpcCIDR: !Ref VpcCIDR
+        PublicSubnet1CIDR: !Ref PublicSubnet1CIDR
+        PublicSubnet2CIDR: !Ref PublicSubnet2CIDR
+        PrivateSubnet1CIDR: !Ref PrivateSubnet1CIDR
+        PrivateSubnet2CIDR: !Ref PrivateSubnet2CIDR
+        SingleNatGateway: !Ref SingleNatGateway
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  SecurityStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${TemplatesBucketName}.s3.${AWS::Region}.amazonaws.com/templates/${TemplatesVersion}/02-security.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        VpcId: !GetAtt NetworkStack.Outputs.VpcId
+        VpcCidr: !GetAtt NetworkStack.Outputs.VpcCidr
+        ContainerPort: !Ref ContainerPort
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  EcrEndpointsStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${TemplatesBucketName}.s3.${AWS::Region}.amazonaws.com/templates/${TemplatesVersion}/03-ecr-endpoints.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        VpcId: !GetAtt NetworkStack.Outputs.VpcId
+        PrivateSubnetIds: !GetAtt NetworkStack.Outputs.PrivateSubnetIds
+        VpcEndpointSecurityGroupId: !GetAtt SecurityStack.Outputs.VpcEndpointSecurityGroupId
+        PrivateRouteTableIds: !GetAtt NetworkStack.Outputs.PrivateRouteTableIds
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  AlbEcsStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${TemplatesBucketName}.s3.${AWS::Region}.amazonaws.com/templates/${TemplatesVersion}/04-alb-ecs.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        VpcId: !GetAtt NetworkStack.Outputs.VpcId
+        PublicSubnetIds: !GetAtt NetworkStack.Outputs.PublicSubnetIds
+        PrivateSubnetIds: !GetAtt NetworkStack.Outputs.PrivateSubnetIds
+        AlbSecurityGroupId: !GetAtt SecurityStack.Outputs.AlbSecurityGroupId
+        EcsTaskSecurityGroupId: !GetAtt SecurityStack.Outputs.EcsTaskSecurityGroupId
+        ContainerPort: !Ref ContainerPort
+        RepositoryUri: !GetAtt EcrEndpointsStack.Outputs.RepositoryUri
+        InitialImageTag: !Ref InitialImageTag
+        TaskCpu: !Ref TaskCpu
+        TaskMemory: !Ref TaskMemory
+        MinTasks: !Ref MinTasks
+        DesiredTasks: !Ref DesiredTasks
+        MaxTasks: !Ref MaxTasks
+        CpuTargetPercent: !Ref CpuTargetPercent
+        AppOwnerName: !Ref AppOwnerName
+        LabName: !Ref LabName
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  CicdPipelineStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${TemplatesBucketName}.s3.${AWS::Region}.amazonaws.com/templates/${TemplatesVersion}/05-cicd-pipeline.yaml"
+      Parameters:
+        ProjectName: !Ref ProjectName
+        EcrRepositoryName: !GetAtt EcrEndpointsStack.Outputs.RepositoryName
+        EcrRepositoryArn: !GetAtt EcrEndpointsStack.Outputs.RepositoryArn
+        ClusterName: !GetAtt AlbEcsStack.Outputs.ClusterName
+        ServiceName: !GetAtt AlbEcsStack.Outputs.ServiceName
+        ProdListenerArn: !GetAtt AlbEcsStack.Outputs.ProdListenerArn
+        BlueTargetGroupName: !GetAtt AlbEcsStack.Outputs.BlueTargetGroupName
+        GreenTargetGroupName: !GetAtt AlbEcsStack.Outputs.GreenTargetGroupName
+        GitHubOrg: !Ref GitHubOrg
+        AppRepoName: !Ref AppRepoName
+        AppRepoBranch: !Ref AppRepoBranch
+        DeployedImageTag: !Ref DeployedImageTag
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+Outputs:
+  AlbEndpoint:
+    Description: Public URL of the application
+    Value: !Sub "http://${AlbEcsStack.Outputs.AlbDnsName}"
+  EcrRepositoryUri:
+    Value: !GetAtt EcrEndpointsStack.Outputs.RepositoryUri
+  EcsClusterName:
+    Value: !GetAtt AlbEcsStack.Outputs.ClusterName
+  EcsServiceName:
+    Value: !GetAtt AlbEcsStack.Outputs.ServiceName
+  PipelineName:
+    Value: !GetAtt CicdPipelineStack.Outputs.PipelineName
+  GitHubConnectionArn:
+    Description: Authorize this connection once in the console (see README) before first pipeline run
+    Value: !GetAtt CicdPipelineStack.Outputs.GitHubConnectionArn
+  VpcId:
+    Value: !GetAtt NetworkStack.Outputs.VpcId

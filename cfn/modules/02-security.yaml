@@ -1,0 +1,86 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Least-privilege security groups for the ECS blue/green lab.
+  Traffic path enforced by SG rules only (defense in depth, no wide-open
+  ingress anywhere):
+    Internet -> ALB SG (80/443)
+    ALB SG   -> ECS Task SG (container port only)
+    ECS Task SG -> VPC Endpoint SG (443 only, for ECR/logs/S3 access)
+
+Parameters:
+  ProjectName:
+    Type: String
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  VpcCidr:
+    Type: String
+  ContainerPort:
+    Type: Number
+    Default: 8080
+
+Resources:
+
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Public ALB - allows inbound HTTP/HTTPS from the internet only
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP from internet
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          CidrIp: !Ref VpcCidr
+          Description: Only to ECS tasks on the container port
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-alb-sg"
+
+  EcsTaskSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: ECS Fargate tasks - accepts traffic from the ALB only
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: !Ref ContainerPort
+          ToPort: !Ref ContainerPort
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
+          Description: App traffic from ALB only
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS egress (ECR/logs/STS via VPC endpoints; 0.0.0.0/0 scoped by routing, no NAT needed for these calls)
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-ecs-task-sg"
+
+  VpcEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Interface VPC endpoints - accepts HTTPS from ECS tasks only
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref EcsTaskSecurityGroup
+          Description: HTTPS from ECS tasks only
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-vpce-sg"
+
+Outputs:
+  AlbSecurityGroupId:
+    Value: !Ref AlbSecurityGroup
+  EcsTaskSecurityGroupId:
+    Value: !Ref EcsTaskSecurityGroup
+  VpcEndpointSecurityGroupId:
+    Value: !Ref VpcEndpointSecurityGroup

@@ -1,0 +1,326 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Public ALB + ECS Fargate service for the blue/green lab. The ECS service
+  uses deployment controller CODE_DEPLOY, so CodeDeploy (not ECS itself)
+  owns traffic shifting between the "blue" and "green" target groups.
+
+Parameters:
+  ProjectName:
+    Type: String
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  PublicSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+  AlbSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+  EcsTaskSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+  ContainerPort:
+    Type: Number
+    Default: 8080
+  RepositoryUri:
+    Type: String
+    Description: ECR repository URI (from the ecr-endpoints nested stack)
+  InitialImageTag:
+    Type: String
+    Default: "bootstrap"
+    Description: >
+      Special value "bootstrap" (default) deploys a public nginx
+      placeholder image instead of anything from our own (initially
+      empty) ECR repo, so the very first `CREATE_COMPLETE` doesn't
+      depend on an image that doesn't exist yet. Any other value is
+      treated as a real tag in our ECR repo. See ../app/README.md
+      "Why a bootstrap placeholder" for the full explanation. Once
+      CodeDeploy performs the first real blue/green release, it owns the
+      running task definition -- this parameter no longer matters until
+      the next full CREATE.
+  TaskCpu:
+    Type: String
+    Default: "256"
+    AllowedValues: ["256", "512", "1024"]
+  TaskMemory:
+    Type: String
+    Default: "512"
+    AllowedValues: ["512", "1024", "2048"]
+  MinTasks:
+    Type: Number
+    Default: 1
+  DesiredTasks:
+    Type: Number
+    Default: 1
+  MaxTasks:
+    Type: Number
+    Default: 4
+  CpuTargetPercent:
+    Type: Number
+    Default: 60
+    Description: Target average CPU utilization (%) for the scaling policy
+  AppOwnerName:
+    Type: String
+    Description: Full name displayed on the app's landing page
+  LabName:
+    Type: String
+    Default: "ECS Fargate Blue/Green CI/CD Lab"
+
+Conditions:
+  UseBootstrapPlaceholder: !Equals [!Ref InitialImageTag, "bootstrap"]
+
+Resources:
+
+  # ------------------------------- ALB ---------------------------------
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${ProjectName}-alb"
+      Scheme: internet-facing
+      Type: application
+      IpAddressType: ipv4
+      SecurityGroups: [!Ref AlbSecurityGroupId]
+      Subnets: !Ref PublicSubnetIds
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-alb"
+
+  # Two target groups so CodeDeploy can shift traffic from Blue -> Green
+  # (and back, on rollback) without any downtime.
+  BlueTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ProjectName}-tg-blue"
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      # "/" rather than "/actuator/health": the bootstrap placeholder
+      # image (plain nginx) only knows how to answer "/" with 200, and
+      # the real app's own landing page at "/" also returns 200 -- one
+      # health check path that's valid before AND after the first real
+      # deploy, no bootstrap-only special case needed on the ALB side.
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "30"
+
+  GreenTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub "${ProjectName}-tg-green"
+      Port: !Ref ContainerPort
+      Protocol: HTTP
+      TargetType: ip
+      VpcId: !Ref VpcId
+      HealthCheckPath: /
+      HealthCheckIntervalSeconds: 15
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      TargetGroupAttributes:
+        - Key: deregistration_delay.timeout_seconds
+          Value: "30"
+
+  ProdListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref BlueTargetGroup
+          # CodeDeploy rewrites this default action's target group during
+          # each blue/green deployment -- do not drift-correct manually.
+
+  # ------------------------------- ECS -----------------------------------
+  EcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Sub "${ProjectName}-cluster"
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-cluster"
+
+  AppLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/ecs/${ProjectName}-app"
+      RetentionInDays: 14
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-task-execution-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: PullFromScopedRepo
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - "ecr:GetDownloadUrlForLayer"
+                  - "ecr:BatchGetImage"
+                  - "ecr:BatchCheckLayerAvailability"
+                Resource: !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${ProjectName}-app"
+              - Effect: Allow
+                Action: "ecr:GetAuthorizationToken"
+                Resource: "*"
+              - Effect: Allow
+                Action: "logs:CreateLogStream"
+                Resource: !GetAtt AppLogGroup.Arn
+              - Effect: Allow
+                Action: "logs:PutLogEvents"
+                Resource: !Sub "${AppLogGroup.Arn}:*"
+
+  # Application-level permissions the running container itself needs.
+  # This lab's app doesn't call other AWS services, so it stays empty
+  # beyond the trust policy -- expand least-privilege-first as needed.
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-task-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: "sts:AssumeRole"
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub "${ProjectName}-app"
+      Cpu: !Ref TaskCpu
+      Memory: !Ref TaskMemory
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [FARGATE]
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: !Sub "${ProjectName}-container"
+          Image: !If
+            - UseBootstrapPlaceholder
+            # Public nginx placeholder so CREATE_COMPLETE never depends on
+            # an image in our own (initially empty) ECR repo.
+            - "public.ecr.aws/nginx/nginx:1.27-alpine"
+            - !Sub "${RepositoryUri}:${InitialImageTag}"
+          # nginx's default listen port is 80; remap to ContainerPort so
+          # the ALB target group (fixed at ContainerPort) can health-check
+          # it. No-op / omitted entirely once the real app image is used.
+          Command: !If
+            - UseBootstrapPlaceholder
+            - - "/bin/sh"
+              - "-c"
+              - !Sub "sed -i 's/listen  *80;/listen ${ContainerPort};/' /etc/nginx/conf.d/default.conf && exec nginx -g 'daemon off;'"
+            - !Ref "AWS::NoValue"
+          Essential: true
+          PortMappings:
+            - ContainerPort: !Ref ContainerPort
+              Protocol: tcp
+          Environment:
+            - Name: APP_OWNER_NAME
+              Value: !Ref AppOwnerName
+            - Name: LAB_NAME
+              Value: !Ref LabName
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref AppLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: app
+    # NOTE: CodeDeploy blue/green deployments register a *new* task
+    # definition revision on every release. This resource only defines
+    # revision 1 (the bootstrap placeholder image); CloudFormation must
+    # NOT try to "correct" the running revision back afterwards, so the
+    # ECS service below ignores TaskDefinition changes post-creation.
+
+  EcsService:
+    Type: AWS::ECS::Service
+    # Because DeploymentController is CODE_DEPLOY, CloudFormation creates
+    # the service once and then steps back -- CodeDeploy owns the running
+    # task definition + target group wiring from here on.
+    Properties:
+      ServiceName: !Sub "${ProjectName}-service"
+      Cluster: !Ref EcsCluster
+      TaskDefinition: !Ref TaskDefinition
+      DesiredCount: !Ref DesiredTasks
+      LaunchType: FARGATE
+      DeploymentController:
+        Type: CODE_DEPLOY
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: DISABLED
+          Subnets: !Ref PrivateSubnetIds
+          SecurityGroups: [!Ref EcsTaskSecurityGroupId]
+      LoadBalancers:
+        - ContainerName: !Sub "${ProjectName}-container"
+          ContainerPort: !Ref ContainerPort
+          TargetGroupArn: !Ref BlueTargetGroup
+      HealthCheckGracePeriodSeconds: 60
+    DependsOn: ProdListener
+
+  # ------------------------- Auto Scaling (1-4, CPU) ----------------------
+  ScalableTarget:
+    Type: AWS::ApplicationAutoScaling::ScalableTarget
+    Properties:
+      ServiceNamespace: ecs
+      ResourceId: !Sub "service/${EcsCluster}/${EcsService.Name}"
+      ScalableDimension: ecs:service:DesiredCount
+      MinCapacity: !Ref MinTasks
+      MaxCapacity: !Ref MaxTasks
+
+  CpuScalingPolicy:
+    Type: AWS::ApplicationAutoScaling::ScalingPolicy
+    Properties:
+      PolicyName: !Sub "${ProjectName}-cpu-target-tracking"
+      PolicyType: TargetTrackingScaling
+      ScalingTargetId: !Ref ScalableTarget
+      TargetTrackingScalingPolicyConfiguration:
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ECSServiceAverageCPUUtilization
+        TargetValue: !Ref CpuTargetPercent
+        ScaleInCooldown: 120
+        ScaleOutCooldown: 60
+
+Outputs:
+  AlbDnsName:
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+  AlbArn:
+    Value: !Ref ApplicationLoadBalancer
+  AlbHostedZoneId:
+    Value: !GetAtt ApplicationLoadBalancer.CanonicalHostedZoneID
+  ProdListenerArn:
+    Value: !Ref ProdListener
+  BlueTargetGroupName:
+    Value: !GetAtt BlueTargetGroup.TargetGroupName
+  GreenTargetGroupName:
+    Value: !GetAtt GreenTargetGroup.TargetGroupName
+  BlueTargetGroupArn:
+    Value: !Ref BlueTargetGroup
+  GreenTargetGroupArn:
+    Value: !Ref GreenTargetGroup
+  ClusterName:
+    Value: !Ref EcsCluster
+  ServiceName:
+    Value: !GetAtt EcsService.Name
+  TaskExecutionRoleArn:
+    Value: !GetAtt TaskExecutionRole.Arn
+  TaskRoleArn:
+    Value: !GetAtt TaskRole.Arn
+  LogGroupName:
+    Value: !Ref AppLogGroup

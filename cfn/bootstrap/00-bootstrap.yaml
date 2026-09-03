@@ -1,0 +1,299 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Bootstrap stack for the ECS Blue/Green CI/CD lab (two-repo edition).
+  Deployed ONCE, manually, before Git sync takes ownership of the rest of
+  the stacks. Creates the S3 bucket that hosts nested CFN templates, the
+  GitHub OIDC provider, and OIDC roles -- one for the infra repo's
+  template-packaging workflow, one for the app repo's build/push workflow,
+  and one for the infra repo's manual direct-deploy fallback. Because the
+  packaging and build workflows now live in genuinely separate repos, each
+  role's trust policy is already isolated by repo; it also checks GitHub's
+  job_workflow_ref claim as defense in depth. See README.md for the full
+  explanation.
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: ecs-bluegreen-lab
+    Description: Prefix used for all resource names/tags in this lab.
+
+  GitHubOrg:
+    Type: String
+    Description: GitHub org or username that owns both repos (e.g. "1MuhireDavid").
+
+  InfraRepoName:
+    Type: String
+    Default: ecs-bluegreen-lab-infra
+
+  AppRepoName:
+    Type: String
+    Default: ecs-bluegreen-lab-app
+
+  AllowedGitRef:
+    Type: String
+    Default: "refs/heads/main"
+    Description: Git ref allowed to assume the OIDC roles (branch protection boundary).
+
+  InfraPackagingWorkflowFile:
+    Type: String
+    Default: package-templates.yml
+    Description: Filename (under the infra repo's .github/workflows/) of the packaging workflow.
+
+  AppBuildWorkflowFile:
+    Type: String
+    Default: build-and-push.yml
+    Description: Filename (under the app repo's .github/workflows/) of the build/push workflow.
+
+  InfraDeployWorkflowFile:
+    Type: String
+    Default: infra-deploy.yml
+    Description: >
+      Filename (under the infra repo's .github/workflows/) of the manual
+      direct-deploy workflow -- a fallback that deploys root.yaml via the
+      CLI, used when CloudFormation Git sync isn't picking up stack
+      parameters correctly.
+
+  CreateOidcProvider:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Set to "false" (default) if the token.actions.githubusercontent.com
+      OIDC provider already exists in this AWS account -- only one is
+      allowed per account, and other labs in this account typically
+      created it already. Set "true" only if IAM > Identity providers
+      shows none registered for GitHub yet.
+
+Conditions:
+  ShouldCreateOidcProvider: !Equals [!Ref CreateOidcProvider, "true"]
+
+Resources:
+
+  # ---------------------------------------------------------------------
+  # S3 bucket that hosts nested CloudFormation template bodies. root.yaml
+  # references child templates here via TemplateURL. Versioned so we keep
+  # a full history of every infra change independent of git (defense in
+  # depth if the repo history is ever rewritten).
+  # ---------------------------------------------------------------------
+  TemplatesBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub "${ProjectName}-cfn-templates-${AWS::AccountId}-${AWS::Region}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldTemplateVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: ManagedBy
+          Value: CloudFormation-Bootstrap
+
+  TemplatesBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref TemplatesBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: "s3:*"
+            Resource:
+              - !GetAtt TemplatesBucket.Arn
+              - !Sub "${TemplatesBucket.Arn}/*"
+            Condition:
+              Bool:
+                "aws:SecureTransport": "false"
+          # root.yaml's nested AWS::CloudFormation::Stack resources fetch
+          # their child templates via TemplateURL. For NESTED stacks (unlike
+          # the root template), CloudFormation performs that S3 GetObject
+          # using the credentials of the stack's own execution role (here,
+          # the Git sync stack execution role) -- not a blanket
+          # cloudformation.amazonaws.com service identity. A first attempt
+          # granting only the service principal still failed with "S3
+          # error: Access Denied", confirming this. InfraPackagingRole
+          # (above) only lets GitHub Actions UPLOAD templates. Since the
+          # exact auto-generated Git sync execution role name isn't known
+          # to this template, grant read to any IAM principal in THIS
+          # account instead (still same-account only, not public --
+          # PublicAccessBlockConfiguration continues to block that).
+          - Sid: AllowAccountPrincipalsReadTemplates
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:aws:iam::${AWS::AccountId}:root"
+            Action: "s3:GetObject"
+            Resource: !Sub "${TemplatesBucket.Arn}/templates/*"
+
+  # ---------------------------------------------------------------------
+  # GitHub OIDC provider (singleton per account -- if another lab in this
+  # account already created it, leave CreateOidcProvider at "false")
+  # ---------------------------------------------------------------------
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: ShouldCreateOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      # GitHub's OIDC token-signing thumbprint. AWS validates the TLS chain
+      # itself for *.actions.githubusercontent.com providers; this value is
+      # required by the resource schema but no longer used for validation.
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+
+  # ---------------------------------------------------------------------
+  # Role for the infra repo's template-packaging workflow. Scoped to (a)
+  # the infra repo + branch AND (b) this exact workflow file.
+  # ---------------------------------------------------------------------
+  InfraPackagingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-gha-infra-packaging-role"
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub "arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Action: "sts:AssumeRoleWithWebIdentity"
+            Condition:
+              StringEquals:
+                "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+              StringLike:
+                "token.actions.githubusercontent.com:sub": !Sub "repo:${GitHubOrg}/${InfraRepoName}:ref:${AllowedGitRef}"
+                "token.actions.githubusercontent.com:job_workflow_ref": !Sub "${GitHubOrg}/${InfraRepoName}/.github/workflows/${InfraPackagingWorkflowFile}@${AllowedGitRef}"
+      Policies:
+        - PolicyName: PutNestedTemplates
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ListBucket
+                Effect: Allow
+                Action: ["s3:ListBucket"]
+                Resource: !GetAtt TemplatesBucket.Arn
+              - Sid: ReadWriteTemplateObjects
+                Effect: Allow
+                Action: ["s3:PutObject", "s3:GetObject"]
+                Resource: !Sub "${TemplatesBucket.Arn}/templates/*"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ---------------------------------------------------------------------
+  # Role for the app repo's build/push workflow. Scoped to (a) the app
+  # repo + branch AND (b) this exact workflow file, plus push-only ECR
+  # actions on a single, named repository ARN.
+  # ---------------------------------------------------------------------
+  AppEcrPushRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-gha-ecr-push-role"
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub "arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Action: "sts:AssumeRoleWithWebIdentity"
+            Condition:
+              StringEquals:
+                "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+              StringLike:
+                "token.actions.githubusercontent.com:sub": !Sub "repo:${GitHubOrg}/${AppRepoName}:ref:${AllowedGitRef}"
+                "token.actions.githubusercontent.com:job_workflow_ref": !Sub "${GitHubOrg}/${AppRepoName}/.github/workflows/${AppBuildWorkflowFile}@${AllowedGitRef}"
+      Policies:
+        - PolicyName: EcrPushOnly
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: EcrAuth
+                Effect: Allow
+                Action: "ecr:GetAuthorizationToken"
+                Resource: "*"
+              - Sid: EcrPushToSingleRepo
+                Effect: Allow
+                Action:
+                  - "ecr:BatchCheckLayerAvailability"
+                  - "ecr:PutImage"
+                  - "ecr:InitiateLayerUpload"
+                  - "ecr:UploadLayerPart"
+                  - "ecr:CompleteLayerUpload"
+                  - "ecr:BatchGetImage"
+                  - "ecr:DescribeImages"
+                  - "ecr:DescribeRepositories"
+                Resource: !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${ProjectName}-app"
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+  # ---------------------------------------------------------------------
+  # Role for the infra repo's manual direct-deploy workflow. This is a
+  # fallback path that deploys root.yaml straight via `aws cloudformation
+  # deploy`, bypassing CloudFormation Git sync -- kept because Git sync's
+  # auto-changeset creation has repeatedly failed validation for this
+  # stack for reasons not visible from the repo side (see infra-deploy.yml).
+  # Unlike the two roles above it needs broad enough permissions to create
+  # every resource type root.yaml and its nested stacks provision (VPC,
+  # ALB, ECS, autoscaling, IAM roles for CAPABILITY_NAMED_IAM,
+  # CodePipeline, ...). Scoped to the infra repo + branch + workflow file
+  # like the others; kept manual (workflow_dispatch only, see the workflow
+  # file) rather than push-triggered as an extra guardrail given the
+  # broad permissions.
+  # ---------------------------------------------------------------------
+  InfraDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-gha-infra-deploy-role"
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub "arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com"
+            Action: "sts:AssumeRoleWithWebIdentity"
+            Condition:
+              StringEquals:
+                "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+              StringLike:
+                "token.actions.githubusercontent.com:sub": !Sub "repo:${GitHubOrg}/${InfraRepoName}:ref:${AllowedGitRef}"
+                "token.actions.githubusercontent.com:job_workflow_ref": !Sub "${GitHubOrg}/${InfraRepoName}/.github/workflows/${InfraDeployWorkflowFile}@${AllowedGitRef}"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+
+Outputs:
+  TemplatesBucketName:
+    Value: !Ref TemplatesBucket
+    Export:
+      Name: !Sub "${ProjectName}-templates-bucket"
+
+  InfraPackagingRoleArn:
+    Value: !GetAtt InfraPackagingRole.Arn
+
+  AppEcrPushRoleArn:
+    Value: !GetAtt AppEcrPushRole.Arn
+
+  InfraDeployRoleArn:
+    Value: !GetAtt InfraDeployRole.Arn

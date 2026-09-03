@@ -1,0 +1,319 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Deployment pipeline: EventBridge detects a new image PUSH to ECR and
+  starts CodePipeline. CodePipeline pulls (1) the image reference from ECR
+  and (2) the appspec.yaml/taskdef.json deployment templates from the
+  separate ecs-bluegreen-lab-app GitHub repo, then hands both to
+  CodeDeploy, which performs a blue/green ECS deployment (traffic shifted
+  from the "blue" target group to "green").
+
+Parameters:
+  ProjectName:
+    Type: String
+  EcrRepositoryName:
+    Type: String
+  EcrRepositoryArn:
+    Type: String
+  ClusterName:
+    Type: String
+  ServiceName:
+    Type: String
+  ProdListenerArn:
+    Type: String
+  BlueTargetGroupName:
+    Type: String
+  GreenTargetGroupName:
+    Type: String
+  GitHubOrg:
+    Type: String
+  AppRepoName:
+    Type: String
+    Default: ecs-bluegreen-lab-app
+    Description: The separate app repo -- source of ecs/appspec.yaml and ecs/taskdef.json
+  AppRepoBranch:
+    Type: String
+    Default: main
+  # Path, relative to the app repo root, that holds appspec.yaml and
+  # taskdef.json.
+  DeployTemplatesPath:
+    Type: String
+    Default: ecs
+  DeployedImageTag:
+    Type: String
+    Default: latest
+    Description: >
+      Mutable tag the app build workflow always pushes last. This is
+      the tag EventBridge/CodePipeline pick up as "the newest version."
+
+Resources:
+
+  # ---------------------------------------------------------------------
+  # One-time-authorize connection to GitHub, used only to fetch the
+  # appspec/taskdef templates (read-only "Source" action). This is
+  # AWS's native CodeConnections mechanism (GitHub App install), separate
+  # from the OIDC roles used by GitHub Actions -- see ../README.md
+  # for why these are two different, intentional auth mechanisms.
+  #
+  # Logical ID bumped to V2: the original connection was deleted directly
+  # in the console (out-of-band from CloudFormation), leaving the stack's
+  # tracked resource pointing at an ARN that no longer exists ("drift").
+  # CloudFormation won't self-heal that on a normal update -- renaming the
+  # logical ID forces it to CREATE a fresh connection instead of trying
+  # (and failing) to update one that's gone. Needs the same one-click
+  # authorization in Developer Tools > Settings > Connections afterward.
+  # ---------------------------------------------------------------------
+  GitHubConnectionV2:
+    Type: AWS::CodeStarConnections::Connection
+    Properties:
+      # ConnectionName has a 32-char AWS limit; "${ProjectName}-github-connection"
+      # runs over it, hence the shorter "-github-conn" suffix here.
+      ConnectionName: !Sub "${ProjectName}-github-conn"
+      ProviderType: GitHub
+
+  ArtifactBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      # Kept short deliberately: ProjectName + this suffix + account id +
+      # the longest AWS region name must still fit under S3's 63-char
+      # bucket name limit.
+      BucketName: !Sub "${ProjectName}-pipeline-${AWS::AccountId}-${AWS::Region}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldArtifacts
+            Status: Enabled
+            ExpirationInDays: 30
+
+  # ------------------------------ CodeDeploy ------------------------------
+  CodeDeployServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-codedeploy-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: codedeploy.amazonaws.com }
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCodeDeployRoleForECS
+
+  CodeDeployApplication:
+    Type: AWS::CodeDeploy::Application
+    Properties:
+      ApplicationName: !Sub "${ProjectName}-app"
+      ComputePlatform: ECS
+
+  CodeDeployDeploymentGroup:
+    Type: AWS::CodeDeploy::DeploymentGroup
+    Properties:
+      ApplicationName: !Ref CodeDeployApplication
+      DeploymentGroupName: !Sub "${ProjectName}-dg"
+      ServiceRoleArn: !GetAtt CodeDeployServiceRole.Arn
+      DeploymentConfigName: CodeDeployDefault.ECSAllAtOnce
+      DeploymentStyle:
+        DeploymentType: BLUE_GREEN
+        DeploymentOption: WITH_TRAFFIC_CONTROL
+      BlueGreenDeploymentConfiguration:
+        DeploymentReadyOption:
+          ActionOnTimeout: CONTINUE_DEPLOYMENT
+        TerminateBlueInstancesOnDeploymentSuccess:
+          Action: TERMINATE
+          TerminationWaitTimeInMinutes: 10
+      ECSServices:
+        - ClusterName: !Ref ClusterName
+          ServiceName: !Ref ServiceName
+      LoadBalancerInfo:
+        TargetGroupPairInfoList:
+          - ProdTrafficRoute:
+              ListenerArns: [!Ref ProdListenerArn]
+            TargetGroups:
+              - Name: !Ref BlueTargetGroupName
+              - Name: !Ref GreenTargetGroupName
+
+  # ------------------------------ CodePipeline ------------------------------
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-codepipeline-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: codepipeline.amazonaws.com }
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: PipelinePermissions
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ArtifactBucketAccess
+                Effect: Allow
+                Action: ["s3:GetObject", "s3:PutObject", "s3:GetBucketVersioning"]
+                Resource:
+                  - !GetAtt ArtifactBucket.Arn
+                  - !Sub "${ArtifactBucket.Arn}/*"
+              - Sid: EcrSourceAction
+                Effect: Allow
+                Action:
+                  - "ecr:DescribeImages"
+                  - "ecr:GetDownloadUrlForLayer"
+                  - "ecr:BatchGetImage"
+                Resource: !Ref EcrRepositoryArn
+              - Sid: GitHubConnectionUse
+                Effect: Allow
+                Action: "codestar-connections:UseConnection"
+                Resource: !Ref GitHubConnectionV2
+              - Sid: CodeDeployTrigger
+                Effect: Allow
+                Action:
+                  - "codedeploy:CreateDeployment"
+                  - "codedeploy:GetApplication"
+                  - "codedeploy:GetDeployment"
+                  - "codedeploy:GetDeploymentConfig"
+                  - "codedeploy:GetApplicationRevision"
+                  - "codedeploy:RegisterApplicationRevision"
+                Resource: "*"
+              - Sid: RegisterTaskDefinitionForDeploy
+                Effect: Allow
+                Action:
+                  # RegisterTaskDefinition/DeregisterTaskDefinition don't
+                  # support resource-level restriction (the new revision
+                  # ARN doesn't exist yet at call time), hence Resource: "*"
+                  # rather than scoping to the family ARN.
+                  - "ecs:RegisterTaskDefinition"
+                  - "ecs:DescribeTaskDefinition"
+                  - "ecs:DeregisterTaskDefinition"
+                Resource: "*"
+              - Sid: PassRolesToEcs
+                Effect: Allow
+                Action: "iam:PassRole"
+                Resource: "*"
+                Condition:
+                  StringEqualsIfExists:
+                    "iam:PassedToService": "ecs-tasks.amazonaws.com"
+
+  Pipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      Name: !Sub "${ProjectName}-pipeline"
+      RoleArn: !GetAtt CodePipelineServiceRole.Arn
+      ArtifactStore:
+        Type: S3
+        Location: !Ref ArtifactBucket
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: ImageSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: ECR
+                Version: "1"
+              Configuration:
+                RepositoryName: !Ref EcrRepositoryName
+                ImageTag: !Ref DeployedImageTag
+              OutputArtifacts: [{ Name: ImageDetail }]
+              RunOrder: 1
+            - Name: DeployTemplatesSource
+              ActionTypeId:
+                Category: Source
+                Owner: AWS
+                Provider: CodeStarSourceConnection
+                Version: "1"
+              Configuration:
+                ConnectionArn: !Ref GitHubConnectionV2
+                FullRepositoryId: !Sub "${GitHubOrg}/${AppRepoName}"
+                BranchName: !Ref AppRepoBranch
+                # false, deliberately: the ECR PUSH EventBridge rule is the
+                # only intended trigger for this pipeline. DetectChanges:true
+                # would add a webhook that also starts THIS pipeline on any
+                # unrelated push to the app repo (e.g. a README edit). This
+                # action still pulls the latest appspec.yaml/taskdef.json from
+                # the app repo every time the pipeline runs, DetectChanges just
+                # controls whether IT can also start a run.
+                DetectChanges: "false"
+              OutputArtifacts: [{ Name: DeployTemplates }]
+              RunOrder: 1
+        - Name: Deploy
+          Actions:
+            - Name: BlueGreenDeploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: CodeDeployToECS
+                Version: "1"
+              InputArtifacts:
+                - { Name: ImageDetail }
+                - { Name: DeployTemplates }
+              Configuration:
+                ApplicationName: !Ref CodeDeployApplication
+                DeploymentGroupName: !Ref CodeDeployDeploymentGroup
+                TaskDefinitionTemplateArtifact: DeployTemplates
+                TaskDefinitionTemplatePath: !Sub "${DeployTemplatesPath}/taskdef.json"
+                AppSpecTemplateArtifact: DeployTemplates
+                AppSpecTemplatePath: !Sub "${DeployTemplatesPath}/appspec.yaml"
+                Image1ArtifactName: ImageDetail
+                Image1ContainerName: IMAGE1_NAME
+              RunOrder: 1
+
+  # ------------------------- EventBridge trigger ---------------------------
+  EventBridgeInvokePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${ProjectName}-eventbridge-pipeline-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: events.amazonaws.com }
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: StartPipeline
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: "codepipeline:StartPipelineExecution"
+                Resource: !Sub "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}"
+
+  EcrPushRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-ecr-push-rule"
+      Description: !Sub "Starts ${ProjectName}-pipeline whenever a new '${DeployedImageTag}' image is pushed to ECR"
+      EventPattern:
+        source: ["aws.ecr"]
+        detail-type: ["ECR Image Action"]
+        detail:
+          action-type: ["PUSH"]
+          result: ["SUCCESS"]
+          repository-name: [!Ref EcrRepositoryName]
+          image-tag: [!Ref DeployedImageTag]
+      Targets:
+        - Id: TriggerCodePipeline
+          Arn: !Sub "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}"
+          RoleArn: !GetAtt EventBridgeInvokePipelineRole.Arn
+
+Outputs:
+  PipelineName:
+    Value: !Ref Pipeline
+  CodeDeployApplicationName:
+    Value: !Ref CodeDeployApplication
+  CodeDeployDeploymentGroupName:
+    Value: !Ref CodeDeployDeploymentGroup
+  GitHubConnectionArn:
+    Value: !Ref GitHubConnectionV2
+    Description: >-
+      PENDING after creation -- complete the handshake once in the AWS
+      Console (Developer Tools > Settings > Connections) to authorize the
+      GitHub App before the pipeline's GitHub source action will work.

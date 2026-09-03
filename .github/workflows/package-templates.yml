@@ -1,0 +1,62 @@
+name: "Package nested templates to S3"
+
+# This workflow does NOT deploy anything itself. Its only job is to get
+# nested-stack template bodies into the S3 bucket that root.yaml's
+# TemplateURL properties point at, then nudge Git sync (by bumping
+# TemplatesVersion in deployment-file.yaml) so CloudFormation notices.
+# Actual deployment stays 100% owned by CloudFormation Git sync.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cfn/modules/**"
+      - "cfn/root.yaml"
+
+permissions:
+  id-token: write   # required for OIDC -> AWS
+  contents: write    # required to commit the version bump back
+
+concurrency:
+  group: package-templates
+  cancel-in-progress: false
+
+jobs:
+  package-and-version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_INFRA_PACKAGING_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Compute template version (short SHA)
+        id: version
+        run: echo "sha=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload nested templates to S3
+        run: |
+          aws s3 cp "cfn/modules/" \
+            "s3://${{ secrets.AWS_TEMPLATES_BUCKET }}/templates/${{ steps.version.outputs.sha }}/" \
+            --recursive --exclude "*" --include "*.yaml"
+
+      - name: Bump TemplatesVersion in deployment-file.yaml
+        run: |
+          sed -i \
+            "s/^  TemplatesVersion:.*/  TemplatesVersion: ${{ steps.version.outputs.sha }}/" \
+            "cfn/deployment-file.yaml"
+
+      - name: Commit version bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "cfn/deployment-file.yaml"
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: point Git sync at templates ${{ steps.version.outputs.sha }} [skip ci]"
+            git push
+          else
+            echo "No version change to commit."
+          fi
