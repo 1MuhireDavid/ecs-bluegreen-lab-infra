@@ -1,5 +1,5 @@
 # Note: nested templates like this one are packaged to S3 by
-# ecs-bluegreen-lab-infra-package-templates.yml whenever this file changes.
+# .github/workflows/package-templates.yml whenever this file changes.
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   Multi-AZ VPC for the ECS blue/green lab. 2 public subnets (ALB, NAT
