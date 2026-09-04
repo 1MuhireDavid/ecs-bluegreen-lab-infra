@@ -1,7 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  Deployment pipeline: EventBridge detects a new image PUSH to ECR and
-  starts CodePipeline. CodePipeline pulls (1) the image reference from ECR
+  Deployment pipeline: EventBridge detects a new image PUSH to ECR (the
+  repo is IMMUTABLE, so every push is a brand-new, uniquely-tagged image --
+  there is no floating ":latest" pointer) and starts CodePipeline, passing
+  the exact image DIGEST that was just pushed in as a source-revision
+  override. CodePipeline pulls (1) that exact image, by digest, from ECR
   and (2) the appspec.yaml/taskdef.json deployment templates from the
   separate ecs-bluegreen-lab-app GitHub repo, then hands both to
   CodeDeploy, which performs a blue/green ECS deployment (traffic shifted
@@ -38,12 +41,6 @@ Parameters:
   DeployTemplatesPath:
     Type: String
     Default: ecs
-  DeployedImageTag:
-    Type: String
-    Default: latest
-    Description: >
-      Mutable tag the app build workflow always pushes last. This is
-      the tag EventBridge/CodePipeline pick up as "the newest version."
 
 Resources:
 
@@ -219,9 +216,18 @@ Resources:
                 Owner: AWS
                 Provider: ECR
                 Version: "1"
+              # No ImageTag configured deliberately: the repo is IMMUTABLE,
+              # so there is no stable tag (like ":latest") to point this at.
+              # AWS falls back to "latest" for this static config, which is
+              # never actually used in normal operation -- EcrPushRule's
+              # EventBridge target below overrides this action's source
+              # revision (by exact image DIGEST) on every real trigger. This
+              # static config only matters if someone manually clicks
+              # "Release change" with no source revision override, which
+              # will fail (no image is ever tagged "latest") -- by design,
+              # to force every real release through the digest-based path.
               Configuration:
                 RepositoryName: !Ref EcrRepositoryName
-                ImageTag: !Ref DeployedImageTag
               OutputArtifacts: [{ Name: ImageDetail }]
               RunOrder: 1
             - Name: DeployTemplatesSource
@@ -290,7 +296,7 @@ Resources:
     Type: AWS::Events::Rule
     Properties:
       Name: !Sub "${ProjectName}-ecr-push-rule"
-      Description: !Sub "Starts ${ProjectName}-pipeline whenever a new '${DeployedImageTag}' image is pushed to ECR"
+      Description: !Sub "Starts ${ProjectName}-pipeline for the exact image digest whenever a sha-tagged push succeeds against ${EcrRepositoryName}"
       EventPattern:
         source: ["aws.ecr"]
         detail-type: ["ECR Image Action"]
@@ -298,11 +304,38 @@ Resources:
           action-type: ["PUSH"]
           result: ["SUCCESS"]
           repository-name: [!Ref EcrRepositoryName]
-          image-tag: [!Ref DeployedImageTag]
+          # Every push is a "sha-<gitsha>" tag (the repo is IMMUTABLE, so
+          # that's the only kind of tag that can ever be pushed) -- matching
+          # this prefix, rather than one exact tag string, is what lets this
+          # rule keep firing on every new immutable tag without needing to
+          # know its value in advance.
+          image-tag: [{ prefix: "sha-" }]
       Targets:
         - Id: TriggerCodePipeline
           Arn: !Sub "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}"
           RoleArn: !GetAtt EventBridgeInvokePipelineRole.Arn
+          # This is the actual fix for "immutable tags + an automatic
+          # newest-image trigger": since there's no stable ":latest" tag for
+          # the Pipeline's ECR source action to point at, EventBridge instead
+          # extracts the DIGEST of the image that was just pushed
+          # ($.detail.image-digest) and passes it into StartPipelineExecution
+          # as a source-revision override for the "ImageSource" action --
+          # so this specific pipeline run always deploys the exact image that
+          # triggered it, by digest, regardless of tag.
+          # Docs: https://docs.aws.amazon.com/codepipeline/latest/userguide/pipelines-trigger-source-overrides.html
+          InputTransformer:
+            InputPathsMap:
+              digest: "$.detail.image-digest"
+            InputTemplate: |
+              {
+                "sourceRevisions": [
+                  {
+                    "actionName": "ImageSource",
+                    "revisionType": "IMAGE_DIGEST",
+                    "revisionValue": <digest>
+                  }
+                ]
+              }
 
 Outputs:
   PipelineName:

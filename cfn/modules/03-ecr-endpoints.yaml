@@ -23,11 +23,16 @@ Resources:
     Type: AWS::ECR::Repository
     Properties:
       RepositoryName: !Sub "${ProjectName}-app"
-      # MUTABLE: rubric calls for a "consistent and mutable" tagging
-      # strategy. We push every build to a floating ":latest" tag (what
-      # ECR PutImage/EventBridge/CodePipeline key off of) AND an immutable
-      # ":<git-sha>" tag for traceability/rollback -- see ../../app/README.md.
-      ImageTagMutability: MUTABLE
+      # IMMUTABLE: rubric calls for a "consistent and immutable" tagging
+      # strategy. Every build pushes exactly one tag, ":sha-<git-sha>", and
+      # ECR rejects ever re-pushing that same tag string again -- there is
+      # no floating ":latest" pointer for CodePipeline to key off of. The
+      # deploy trigger instead watches for ANY successful push (see
+      # EcrPushRule in 05-cicd-pipeline.yaml) and passes the exact image
+      # DIGEST that was just pushed into CodePipeline as a source-revision
+      # override, so the pipeline always deploys the specific image that
+      # triggered it -- see ../../app/README.md.
+      ImageTagMutability: IMMUTABLE
       ImageScanningConfiguration:
         ScanOnPush: true
       EncryptionConfiguration:

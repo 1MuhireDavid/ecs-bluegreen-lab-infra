@@ -66,9 +66,6 @@ Parameters:
   AppRepoBranch:
     Type: String
     Default: main
-  DeployedImageTag:
-    Type: String
-    Default: latest
 
 Resources:
 
@@ -157,7 +154,6 @@ Resources:
         GitHubOrg: !Ref GitHubOrg
         AppRepoName: !Ref AppRepoName
         AppRepoBranch: !Ref AppRepoBranch
-        DeployedImageTag: !Ref DeployedImageTag
       Tags:
         - Key: Project
           Value: !Ref ProjectName

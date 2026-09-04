@@ -87,12 +87,12 @@ with Diagram(
         [ecr_api_ep, ecr_dkr_ep] >> ecr_repo
         logs_ep >> Cloudwatch("CloudWatch\nLogs")
 
-        eventbridge = Eventbridge("EventBridge rule\n(ECR PUSH :latest)")
+        eventbridge = Eventbridge("EventBridge rule\n(ECR PUSH sha-*, IMMUTABLE)")
         pipeline = Codepipeline("CodePipeline")
         codedeploy = Codedeploy("CodeDeploy\n(blue/green)")
 
-        app_action >> Edge(label="docker push\n:sha-xxx + :latest (OIDC)") >> ecr_repo
-        ecr_repo >> Edge(label="PutImage event") >> eventbridge
+        app_action >> Edge(label="docker push\n:sha-xxx only (OIDC)") >> ecr_repo
+        ecr_repo >> Edge(label="PutImage event\n(digest -> source override)") >> eventbridge
         eventbridge >> Edge(label="StartPipelineExecution") >> pipeline
         app_repo >> Edge(label="source: appspec.yaml\n+ taskdef.json\n(DetectChanges: false)", style="dotted") >> pipeline
         pipeline >> codedeploy

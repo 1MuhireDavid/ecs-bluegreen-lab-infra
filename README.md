@@ -47,12 +47,17 @@ ecs-bluegreen-lab-infra/
 - **Scaling:** target-tracking on `ECSServiceAverageCPUUtilization`,
   1 (min) / 1 (desired) / 4 (max) tasks.
 - **Deploy:** ECS service uses `DeploymentController: CODE_DEPLOY`.
-  EventBridge watches ECR for a `PUSH` of the `:latest` tag, starts
-  CodePipeline, which hands the new image + `appspec.yaml`/`taskdef.json`
-  (pulled from the **app repo**) to CodeDeploy for a blue/green traffic
-  shift. The pipeline's GitHub source action has `DetectChanges: false`
-  deliberately, so it never self-triggers on an unrelated app-repo commit
-  (e.g. a README edit) -- EventBridge is the sole trigger.
+  The ECR repo is **immutable** -- every build pushes exactly one
+  never-reused `sha-<gitsha>` tag, so there's no floating `:latest`
+  pointer. EventBridge instead watches for *any* successful `sha-*` push
+  and passes the exact image **digest** into CodePipeline as a
+  source-revision override, so the pipeline always deploys the specific
+  image that triggered it. CodePipeline hands that image + `appspec.yaml`/
+  `taskdef.json` (pulled from the **app repo**) to CodeDeploy for a
+  blue/green traffic shift. The pipeline's GitHub source action has
+  `DetectChanges: false` deliberately, so it never self-triggers on an
+  unrelated app-repo commit (e.g. a README edit) -- EventBridge is the
+  sole trigger.
 - **IaC delivery:** CloudFormation **Git sync** deploys `cfn/root.yaml`
   straight from this repo on every push to `main`; nested stack templates
   are hosted in S3 (bucket created by a one-time bootstrap stack) since
@@ -242,7 +247,7 @@ they create identical resources.)*
 | All resources via CFN + Git sync | `cfn/root.yaml` + `cfn/deployment-file.yaml` |
 | GitHub Actions builds & pushes image | `ecs-bluegreen-lab-app/.github/workflows/build-and-push.yml` |
 | OIDC auth (no long-lived secrets) | Both workflows use `role-to-assume`; roles + `job_workflow_ref` scoping in `cfn/bootstrap/00-bootstrap.yaml` |
-| Image tagging strategy | `:sha-<gitsha>` (immutable) + `:latest` (mutable, `ImageTagMutability: MUTABLE` repo) -- see `ecs-bluegreen-lab-app/README.md` |
+| Image tagging strategy is consistent and immutable | `:sha-<gitsha>` only, `ImageTagMutability: IMMUTABLE` repo -- see `ecs-bluegreen-lab-app/README.md` |
 | App accessible via ALB | `AlbEndpoint` output |
 | ALB health checks pass | Health check path `/`, answered by both the bootstrap placeholder and the real app |
 | CloudWatch Logs | `awslogs` driver -> `/ecs/ecs-bluegreen-lab-app` log group |

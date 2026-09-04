@@ -67,7 +67,6 @@ parameters:
   GitHubOrg: 1MuhireDavid
   AppRepoName: ecs-bluegreen-lab-app
   AppRepoBranch: main
-  DeployedImageTag: latest
 
 tags:
   Project: ecs-bluegreen-lab
