@@ -38,7 +38,7 @@ parameters:
   # (${ProjectName}-cfn-templates-<account>-<region>); redeploying bootstrap
   # will fail with a "bucket already exists" error in that case -- either
   # delete the old bucket first or reuse its name here directly.
-  TemplatesBucketName: ecs-bluegreen-lab-cfn-templates-REPLACE_WITH_ACCOUNT_ID-us-east-1
+  TemplatesBucketName: ecs-bluegreen-lab-cfn-templates-047719661196-us-east-1
 
   # Overwritten automatically by .github/workflows/package-templates.yml
   # every time cfn/modules/** changes -- see that workflow for the
