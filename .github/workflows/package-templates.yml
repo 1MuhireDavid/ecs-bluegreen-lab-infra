@@ -11,6 +11,7 @@ on:
     paths:
       - "cfn/modules/**"
       - "cfn/root.yaml"
+  workflow_dispatch: {}   # TEMPORARY -- lets the OIDC debug run be triggered on demand; remove with the debug step
 
 permissions:
   id-token: write   # required for OIDC -> AWS
@@ -26,6 +27,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      # TEMPORARY -- diagnosing an OIDC "Not authorized to perform
+      # sts:AssumeRoleWithWebIdentity" error that persists despite the
+      # role's trust policy and the OIDC provider both checking out
+      # correctly via `aws iam get-role` / `get-open-id-connect-provider`.
+      # Prints the actual claims GitHub is putting in the ID token so they
+      # can be diffed against the trust policy's sub/job_workflow_ref
+      # conditions. Remove this step once the mismatch is found.
+      - name: Debug OIDC token claims
+        run: |
+          IDTOKEN=$(curl -sSL -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r '.value')
+          echo "$IDTOKEN" | cut -d. -f2 | base64 -d 2>/dev/null | jq .
 
       - name: Configure AWS credentials via OIDC
         uses: aws-actions/configure-aws-credentials@v4
