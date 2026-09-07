@@ -33,22 +33,53 @@ Parameters:
       pick up nested-template-only changes (see deployment-file.yaml).
 
   # --- Networking ---
-  VpcCIDR: { Type: String, Default: 10.20.0.0/16 }
-  PublicSubnet1CIDR: { Type: String, Default: 10.20.0.0/24 }
-  PublicSubnet2CIDR: { Type: String, Default: 10.20.1.0/24 }
-  PrivateSubnet1CIDR: { Type: String, Default: 10.20.10.0/24 }
-  PrivateSubnet2CIDR: { Type: String, Default: 10.20.11.0/24 }
-  SingleNatGateway: { Type: String, Default: "true", AllowedValues: ["true", "false"] }
+  VpcCIDR:
+    Type: String
+    Default: 10.20.0.0/16
+  PublicSubnet1CIDR:
+    Type: String
+    Default: 10.20.0.0/24
+  PublicSubnet2CIDR:
+    Type: String
+    Default: 10.20.1.0/24
+  PrivateSubnet1CIDR:
+    Type: String
+    Default: 10.20.10.0/24
+  PrivateSubnet2CIDR:
+    Type: String
+    Default: 10.20.11.0/24
+  SingleNatGateway:
+    Type: String
+    Default: "true"
+    AllowedValues:
+      - "true"
+      - "false"
 
   # --- Application / ECS ---
-  ContainerPort: { Type: Number, Default: 8080 }
-  InitialImageTag: { Type: String, Default: bootstrap }
-  TaskCpu: { Type: String, Default: "256" }
-  TaskMemory: { Type: String, Default: "512" }
-  MinTasks: { Type: Number, Default: 1 }
-  DesiredTasks: { Type: Number, Default: 1 }
-  MaxTasks: { Type: Number, Default: 4 }
-  CpuTargetPercent: { Type: Number, Default: 60 }
+  ContainerPort:
+    Type: Number
+    Default: 8080
+  InitialImageTag:
+    Type: String
+    Default: bootstrap
+  TaskCpu:
+    Type: String
+    Default: "256"
+  TaskMemory:
+    Type: String
+    Default: "512"
+  MinTasks:
+    Type: Number
+    Default: 1
+  DesiredTasks:
+    Type: Number
+    Default: 1
+  MaxTasks:
+    Type: Number
+    Default: 4
+  CpuTargetPercent:
+    Type: Number
+    Default: 60
   AppOwnerName:
     Type: String
     Description: Your full name, shown on the landing page

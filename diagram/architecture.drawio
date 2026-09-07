@@ -1,6 +1,6 @@
 <mxfile host="app.diagrams.net">
   <diagram name="ECS Fargate Blue-Green CI/CD Lab" id="ecs-bg-lab">
-    <mxGraphModel dx="688" dy="618" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="960" math="0" shadow="0">
+    <mxGraphModel dx="300" dy="270" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="960" math="0" shadow="0">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
@@ -251,7 +251,7 @@
           <mxGeometry height="44" width="142" x="42" as="geometry" />
         </mxCell>
         <mxCell id="38nWsQ_n9KnSGaimlNZY-262" parent="38nWsQ_n9KnSGaimlNZY-258" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#8C4FFF;strokeColor=none;container=1;collapsible=0;" value="" vertex="1">
-          <mxGeometry height="44" width="190" x="16" y="92" as="geometry" />
+          <mxGeometry height="44" width="190" x="16" y="96" as="geometry" />
         </mxCell>
         <mxCell id="38nWsQ_n9KnSGaimlNZY-263" parent="38nWsQ_n9KnSGaimlNZY-262" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#ffffff;strokeColor=none;dashed=0;html=1;shape=mxgraph.aws4.resourceIcon;resIcon=mxgraph.aws4.application_load_balancer;" value="" vertex="1">
           <mxGeometry height="26" width="26" x="8" y="9" as="geometry" />

@@ -56,7 +56,9 @@ Parameters:
   CreateOidcProvider:
     Type: String
     Default: "false"
-    AllowedValues: ["true", "false"]
+    AllowedValues:
+      - "true"
+      - "false"
     Description: >
       Set to "false" (default) if the token.actions.githubusercontent.com
       OIDC provider already exists in this AWS account -- only one is
@@ -192,11 +194,14 @@ Resources:
             Statement:
               - Sid: ListBucket
                 Effect: Allow
-                Action: ["s3:ListBucket"]
+                Action:
+                  - "s3:ListBucket"
                 Resource: !GetAtt TemplatesBucket.Arn
               - Sid: ReadWriteTemplateObjects
                 Effect: Allow
-                Action: ["s3:PutObject", "s3:GetObject"]
+                Action:
+                  - "s3:PutObject"
+                  - "s3:GetObject"
                 Resource: !Sub "${TemplatesBucket.Arn}/templates/*"
       Tags:
         - Key: Project
