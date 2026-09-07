@@ -178,7 +178,12 @@ Resources:
               StringEquals:
                 "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
               StringLike:
-                "token.actions.githubusercontent.com:sub": !Sub "repo:${GitHubOrg}/${InfraRepoName}:ref:${AllowedGitRef}"
+                # GitHub now embeds immutable actor/repo IDs in `sub`
+                # ("org@ownerID/repo@repoID" instead of plain "org/repo") --
+                # the trailing "*" tolerates that optional suffix. Real
+                # scoping is done by job_workflow_ref below, which has no
+                # wildcard and pins the exact repo + workflow file + ref.
+                "token.actions.githubusercontent.com:sub": !Sub "repo:${GitHubOrg}*/${InfraRepoName}*:ref:${AllowedGitRef}"
                 "token.actions.githubusercontent.com:job_workflow_ref": !Sub "${GitHubOrg}/${InfraRepoName}/.github/workflows/${InfraPackagingWorkflowFile}@${AllowedGitRef}"
       Policies:
         - PolicyName: PutNestedTemplates
@@ -218,7 +223,10 @@ Resources:
               StringEquals:
                 "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
               StringLike:
-                "token.actions.githubusercontent.com:sub": !Sub "repo:${GitHubOrg}/${AppRepoName}:ref:${AllowedGitRef}"
+                # See InfraPackagingRole above re: the trailing "*" -- GitHub
+                # embeds immutable actor/repo IDs in `sub`; job_workflow_ref
+                # (no wildcard) does the real scoping.
+                "token.actions.githubusercontent.com:sub": !Sub "repo:${GitHubOrg}*/${AppRepoName}*:ref:${AllowedGitRef}"
                 "token.actions.githubusercontent.com:job_workflow_ref": !Sub "${GitHubOrg}/${AppRepoName}/.github/workflows/${AppBuildWorkflowFile}@${AllowedGitRef}"
       Policies:
         - PolicyName: EcrPushOnly
@@ -275,7 +283,10 @@ Resources:
               StringEquals:
                 "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
               StringLike:
-                "token.actions.githubusercontent.com:sub": !Sub "repo:${GitHubOrg}/${InfraRepoName}:ref:${AllowedGitRef}"
+                # See InfraPackagingRole above re: the trailing "*" -- GitHub
+                # embeds immutable actor/repo IDs in `sub`; job_workflow_ref
+                # (no wildcard) does the real scoping.
+                "token.actions.githubusercontent.com:sub": !Sub "repo:${GitHubOrg}*/${InfraRepoName}*:ref:${AllowedGitRef}"
                 "token.actions.githubusercontent.com:job_workflow_ref": !Sub "${GitHubOrg}/${InfraRepoName}/.github/workflows/${InfraDeployWorkflowFile}@${AllowedGitRef}"
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AdministratorAccess
