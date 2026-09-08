@@ -44,7 +44,7 @@ parameters:
   # Overwritten automatically by .github/workflows/package-templates.yml
   # every time cfn/modules/** changes -- see that workflow for the
   # commit-back step. Leave the placeholder below for the very first push.
-  TemplatesVersion: 914b42bde58f
+  TemplatesVersion: 176e603fc093
 
   VpcCIDR: 10.20.0.0/16
   PublicSubnet1CIDR: 10.20.0.0/24
