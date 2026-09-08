@@ -70,7 +70,8 @@ Resources:
       VpcEndpointType: Interface
       ServiceName: !Sub "com.amazonaws.${AWS::Region}.ecr.api"
       SubnetIds: !Ref PrivateSubnetIds
-      SecurityGroupIds: [!Ref VpcEndpointSecurityGroupId]
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroupId
       PrivateDnsEnabled: true
 
   EcrDkrEndpoint:
@@ -80,7 +81,8 @@ Resources:
       VpcEndpointType: Interface
       ServiceName: !Sub "com.amazonaws.${AWS::Region}.ecr.dkr"
       SubnetIds: !Ref PrivateSubnetIds
-      SecurityGroupIds: [!Ref VpcEndpointSecurityGroupId]
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroupId
       PrivateDnsEnabled: true
 
   LogsEndpoint:
@@ -90,7 +92,8 @@ Resources:
       VpcEndpointType: Interface
       ServiceName: !Sub "com.amazonaws.${AWS::Region}.logs"
       SubnetIds: !Ref PrivateSubnetIds
-      SecurityGroupIds: [!Ref VpcEndpointSecurityGroupId]
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroupId
       PrivateDnsEnabled: true
 
   StsEndpoint:
@@ -100,7 +103,8 @@ Resources:
       VpcEndpointType: Interface
       ServiceName: !Sub "com.amazonaws.${AWS::Region}.sts"
       SubnetIds: !Ref PrivateSubnetIds
-      SecurityGroupIds: [!Ref VpcEndpointSecurityGroupId]
+      SecurityGroupIds:
+        - !Ref VpcEndpointSecurityGroupId
       PrivateDnsEnabled: true
 
   # ECR image layers are actually stored in S3; the Docker daemon on the

@@ -33,7 +33,9 @@ Parameters:
   SingleNatGateway:
     Type: String
     Default: "true"
-    AllowedValues: ["true", "false"]
+    AllowedValues:
+      - "true"
+      - "false"
     Description: >
       "true" = 1 NAT Gateway (lower cost, single point of failure for
       egress only -- ALB/ECS/ECR-via-endpoint still stay multi-AZ).

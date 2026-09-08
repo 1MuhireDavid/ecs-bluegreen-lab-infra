@@ -78,7 +78,8 @@ Resources:
         Status: Enabled
       BucketEncryption:
         ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault: { SSEAlgorithm: AES256 }
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
@@ -99,7 +100,8 @@ Resources:
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
-            Principal: { Service: codedeploy.amazonaws.com }
+            Principal:
+              Service: codedeploy.amazonaws.com
             Action: "sts:AssumeRole"
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/AWSCodeDeployRoleForECS
@@ -132,7 +134,8 @@ Resources:
       LoadBalancerInfo:
         TargetGroupPairInfoList:
           - ProdTrafficRoute:
-              ListenerArns: [!Ref ProdListenerArn]
+              ListenerArns:
+                - !Ref ProdListenerArn
             TargetGroups:
               - Name: !Ref BlueTargetGroupName
               - Name: !Ref GreenTargetGroupName
@@ -146,7 +149,8 @@ Resources:
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
-            Principal: { Service: codepipeline.amazonaws.com }
+            Principal:
+              Service: codepipeline.amazonaws.com
             Action: "sts:AssumeRole"
       Policies:
         - PolicyName: PipelinePermissions
@@ -155,7 +159,10 @@ Resources:
             Statement:
               - Sid: ArtifactBucketAccess
                 Effect: Allow
-                Action: ["s3:GetObject", "s3:PutObject", "s3:GetBucketVersioning"]
+                Action:
+                  - "s3:GetObject"
+                  - "s3:PutObject"
+                  - "s3:GetBucketVersioning"
                 Resource:
                   - !GetAtt ArtifactBucket.Arn
                   - !Sub "${ArtifactBucket.Arn}/*"
@@ -228,7 +235,8 @@ Resources:
               # to force every real release through the digest-based path.
               Configuration:
                 RepositoryName: !Ref EcrRepositoryName
-              OutputArtifacts: [{ Name: ImageDetail }]
+              OutputArtifacts:
+                - Name: ImageDetail
               RunOrder: 1
             - Name: DeployTemplatesSource
               ActionTypeId:
@@ -248,7 +256,8 @@ Resources:
                 # the app repo every time the pipeline runs, DetectChanges just
                 # controls whether IT can also start a run.
                 DetectChanges: "false"
-              OutputArtifacts: [{ Name: DeployTemplates }]
+              OutputArtifacts:
+                - Name: DeployTemplates
               RunOrder: 1
         - Name: Deploy
           Actions:
@@ -281,7 +290,8 @@ Resources:
         Version: "2012-10-17"
         Statement:
           - Effect: Allow
-            Principal: { Service: events.amazonaws.com }
+            Principal:
+              Service: events.amazonaws.com
             Action: "sts:AssumeRole"
       Policies:
         - PolicyName: StartPipeline
@@ -298,18 +308,24 @@ Resources:
       Name: !Sub "${ProjectName}-ecr-push-rule"
       Description: !Sub "Starts ${ProjectName}-pipeline for the exact image digest whenever a sha-tagged push succeeds against ${EcrRepositoryName}"
       EventPattern:
-        source: ["aws.ecr"]
-        detail-type: ["ECR Image Action"]
+        source:
+          - "aws.ecr"
+        detail-type:
+          - "ECR Image Action"
         detail:
-          action-type: ["PUSH"]
-          result: ["SUCCESS"]
-          repository-name: [!Ref EcrRepositoryName]
+          action-type:
+            - "PUSH"
+          result:
+            - "SUCCESS"
+          repository-name:
+            - !Ref EcrRepositoryName
           # Every push is a "sha-<gitsha>" tag (the repo is IMMUTABLE, so
           # that's the only kind of tag that can ever be pushed) -- matching
           # this prefix, rather than one exact tag string, is what lets this
           # rule keep firing on every new immutable tag without needing to
           # know its value in advance.
-          image-tag: [{ prefix: "sha-" }]
+          image-tag:
+            - prefix: "sha-"
       Targets:
         - Id: TriggerCodePipeline
           Arn: !Sub "arn:aws:codepipeline:${AWS::Region}:${AWS::AccountId}:${Pipeline}"
