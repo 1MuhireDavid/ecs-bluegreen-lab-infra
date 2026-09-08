@@ -25,7 +25,6 @@ Parameters:
   PrivateSubnet1CIDR:
     Type: String
     Default: 10.20.10.0/24
-
   PrivateSubnet2CIDR:
     Type: String
     Default: 10.20.11.0/24
