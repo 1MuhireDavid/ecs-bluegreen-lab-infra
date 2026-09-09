@@ -50,7 +50,9 @@ Resources:
                   "countType": "imageCountMoreThan",
                   "countNumber": 20
                 },
-                "action": { "type": "expire" }
+                "action": { 
+                  "type": "expire" 
+                }  
               }
             ]
           }
