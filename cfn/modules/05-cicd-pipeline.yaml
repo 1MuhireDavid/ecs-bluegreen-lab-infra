@@ -118,7 +118,7 @@ Resources:
       ApplicationName: !Ref CodeDeployApplication
       DeploymentGroupName: !Sub "${ProjectName}-dg"
       ServiceRoleArn: !GetAtt CodeDeployServiceRole.Arn
-      DeploymentConfigName: CodeDeployDefault.ECSAllAtOnce
+      DeploymentConfigName: CodeDeployDefault.ECSAllAtOnce   # Immediate traffic shift to the new task set; 
       DeploymentStyle:
         DeploymentType: BLUE_GREEN
         DeploymentOption: WITH_TRAFFIC_CONTROL
@@ -324,7 +324,6 @@ Resources:
           # as a source-revision override for the "ImageSource" action --
           # so this specific pipeline run always deploys the exact image that
           # triggered it, by digest, regardless of tag.
-          # Docs: https://docs.aws.amazon.com/codepipeline/latest/userguide/pipelines-trigger-source-overrides.html
           InputTransformer:
             InputPathsMap:
               digest: "$.detail.image-digest"  # instead of latest tag, EventBridge extracts image digest of the pushed container

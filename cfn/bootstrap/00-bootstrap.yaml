@@ -123,19 +123,6 @@ Resources:
             Condition:
               Bool:
                 "aws:SecureTransport": "false"
-          # root.yaml's nested AWS::CloudFormation::Stack resources fetch
-          # their child templates via TemplateURL. For NESTED stacks (unlike
-          # the root template), CloudFormation performs that S3 GetObject
-          # using the credentials of the stack's own execution role (here,
-          # the Git sync stack execution role) -- not a blanket
-          # cloudformation.amazonaws.com service identity. A first attempt
-          # granting only the service principal still failed with "S3
-          # error: Access Denied", confirming this. InfraPackagingRole
-          # (above) only lets GitHub Actions UPLOAD templates. Since the
-          # exact auto-generated Git sync execution role name isn't known
-          # to this template, grant read to any IAM principal in THIS
-          # account instead (still same-account only, not public --
-          # PublicAccessBlockConfiguration continues to block that).
           - Sid: AllowAccountPrincipalsReadTemplates
             Effect: Allow
             Principal:
@@ -154,9 +141,6 @@ Resources:
       Url: https://token.actions.githubusercontent.com
       ClientIdList:
         - sts.amazonaws.com
-      # GitHub's OIDC token-signing thumbprint. AWS validates the TLS chain
-      # itself for *.actions.githubusercontent.com providers; this value is
-      # required by the resource schema but no longer used for validation.
       ThumbprintList:
         - 6938fd4d98bab03faadb97b34396831e3780aea1
 
@@ -180,11 +164,6 @@ Resources:
               StringEquals:
                 "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
               StringLike:
-                # GitHub now embeds immutable actor/repo IDs in `sub`
-                # ("org@ownerID/repo@repoID" instead of plain "org/repo") --
-                # the trailing "*" tolerates that optional suffix. Real
-                # scoping is done by job_workflow_ref below, which has no
-                # wildcard and pins the exact repo + workflow file + ref.
                 "token.actions.githubusercontent.com:sub": !Sub "repo:${GitHubOrg}*/${InfraRepoName}*:ref:${AllowedGitRef}"
                 "token.actions.githubusercontent.com:job_workflow_ref": !Sub "${GitHubOrg}/${InfraRepoName}/.github/workflows/${InfraPackagingWorkflowFile}@${AllowedGitRef}"
       Policies:
