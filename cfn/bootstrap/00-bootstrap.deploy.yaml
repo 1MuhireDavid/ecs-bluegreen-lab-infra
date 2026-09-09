@@ -1,31 +1,3 @@
-# CloudFormation Git sync "deployment file" for the BOOTSTRAP stack.
-#
-# `template-file-path` is resolved by Git sync RELATIVE TO THE REPO ROOT,
-# not relative to this file's own directory.
-#
-# NOTE: this repo's README recommends deploying the bootstrap stack
-# manually via the Console (it must never be at risk of being
-# deleted/recreated by a routine Git sync update, since it owns the OIDC
-# provider). This file is kept as an optional alternative if you'd rather
-# manage it via Git sync too -- same template, same parameters either way.
-
 template-file-path: cfn/bootstrap/00-bootstrap.yaml
-
-parameters:
-  ProjectName: ecs-bluegreen-lab
-  GitHubOrg: 1MuhireDavid
-  InfraRepoName: ecs-bluegreen-lab-infra
-  AppRepoName: ecs-bluegreen-lab-app
-  AllowedGitRef: refs/heads/main
-  InfraPackagingWorkflowFile: package-templates.yml
-  AppBuildWorkflowFile: build-and-push.yml
-  InfraDeployWorkflowFile: infra-deploy.yml
-  # Confirmed in the AWS console: token.actions.githubusercontent.com
-  # already exists in this account (created by another lab, e.g.
-  # ecr-oidc-lab). "false" so this stack doesn't try to create a duplicate.
-  CreateOidcProvider: "false"
-
-tags:
-  Project: ecs-bluegreen-lab
-  ManagedBy: CloudFormation-GitSync
-  Environment: lab
+parameters: {}
+tags: {}
