@@ -164,7 +164,7 @@ Resources:
                   - "s3:PutObject"
                   - "s3:GetBucketVersioning"
                 Resource:
-                  - !GetAtt ArtifactBucket.Arn
+                  - !GetAtt ArtifactBucket.Arn    # read/write to the pipeline's artifact bucket only
                   - !Sub "${ArtifactBucket.Arn}/*"
               - Sid: EcrSourceAction
                 Effect: Allow
@@ -172,12 +172,12 @@ Resources:
                   - "ecr:DescribeImages"
                   - "ecr:GetDownloadUrlForLayer"
                   - "ecr:BatchGetImage"
-                Resource: !Ref EcrRepositoryArn
+                Resource: !Ref EcrRepositoryArn   # read from the ECR repo only, not write
               - Sid: GitHubConnectionUse
                 Effect: Allow
                 Action: "codestar-connections:UseConnection"
-                Resource: !Ref GitHubConnectionV2
-              - Sid: CodeDeployTrigger
+                Resource: !Ref GitHubConnectionV2    # read-only use of the GitHub connection only, not delete or modify
+              - Sid: CodeDeployTrigger            # trigger CodeDeploy
                 Effect: Allow
                 Action:
                   - "codedeploy:CreateDeployment"
@@ -186,14 +186,10 @@ Resources:
                   - "codedeploy:GetDeploymentConfig"
                   - "codedeploy:GetApplicationRevision"
                   - "codedeploy:RegisterApplicationRevision"
-                Resource: "*"
-              - Sid: RegisterTaskDefinitionForDeploy
+                Resource: "*"                                 
+              - Sid: RegisterTaskDefinitionForDeploy   #register/deregister ECS task definitions 
                 Effect: Allow
                 Action:
-                  # RegisterTaskDefinition/DeregisterTaskDefinition don't
-                  # support resource-level restriction (the new revision
-                  # ARN doesn't exist yet at call time), hence Resource: "*"
-                  # rather than scoping to the family ARN.
                   - "ecs:RegisterTaskDefinition"
                   - "ecs:DescribeTaskDefinition"
                   - "ecs:DeregisterTaskDefinition"
@@ -214,7 +210,7 @@ Resources:
       ArtifactStore:
         Type: S3
         Location: !Ref ArtifactBucket
-      Stages:
+      Stages:             # two stages 1. Source (ECR + GitHub) 2. Deploy (handing everything to CodeDeploy)
         - Name: Source
           Actions:
             - Name: ImageSource
@@ -223,16 +219,6 @@ Resources:
                 Owner: AWS
                 Provider: ECR
                 Version: "1"
-              # No ImageTag configured deliberately: the repo is IMMUTABLE,
-              # so there is no stable tag (like ":latest") to point this at.
-              # AWS falls back to "latest" for this static config, which is
-              # never actually used in normal operation -- EcrPushRule's
-              # EventBridge target below overrides this action's source
-              # revision (by exact image DIGEST) on every real trigger. This
-              # static config only matters if someone manually clicks
-              # "Release change" with no source revision override, which
-              # will fail (no image is ever tagged "latest") -- by design,
-              # to force every real release through the digest-based path.
               Configuration:
                 RepositoryName: !Ref EcrRepositoryName
               OutputArtifacts:
@@ -282,7 +268,7 @@ Resources:
               RunOrder: 1
 
   # ------------------------- EventBridge trigger ---------------------------
-  EventBridgeInvokePipelineRole:
+  EventBridgeInvokePipelineRole:    #uses to call StartPipelineExecution on the pipeline when the ECR push rule fires
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub "${ProjectName}-eventbridge-pipeline-role"
@@ -341,7 +327,7 @@ Resources:
           # Docs: https://docs.aws.amazon.com/codepipeline/latest/userguide/pipelines-trigger-source-overrides.html
           InputTransformer:
             InputPathsMap:
-              digest: "$.detail.image-digest"
+              digest: "$.detail.image-digest"  # instead of latest tag, EventBridge extracts image digest of the pushed container
             InputTemplate: |
               {
                 "sourceRevisions": [

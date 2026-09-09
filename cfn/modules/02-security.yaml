@@ -1,19 +1,19 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   Least-privilege security groups for the ECS blue/green lab.
-  Traffic path enforced by SG rules only (defense in depth, no wide-open
-  ingress anywhere):
+  Ingress is scoped tightly (defense in depth, no wide-open ingress
+  anywhere) to enforce the intended traffic path:
     Internet -> ALB SG (80/443)
     ALB SG   -> ECS Task SG (container port only)
     ECS Task SG -> VPC Endpoint SG (443 only, for ECR/logs/S3 access)
+  Egress is left at AWS's default (allow all outbound) rather than
+  explicitly scoped -- these SGs only restrict inbound traffic.
 
 Parameters:
   ProjectName:
     Type: String
   VpcId:
     Type: AWS::EC2::VPC::Id
-  VpcCidr:
-    Type: String
   ContainerPort:
     Type: Number
     Default: 8080
@@ -31,12 +31,6 @@ Resources:
           ToPort: 80
           CidrIp: 0.0.0.0/0
           Description: HTTP from internet
-      SecurityGroupEgress:
-        - IpProtocol: tcp
-          FromPort: !Ref ContainerPort
-          ToPort: !Ref ContainerPort
-          CidrIp: !Ref VpcCidr
-          Description: Only to ECS tasks on the container port
       Tags:
         - Key: Name
           Value: !Sub "${ProjectName}-alb-sg"
@@ -52,12 +46,6 @@ Resources:
           ToPort: !Ref ContainerPort
           SourceSecurityGroupId: !Ref AlbSecurityGroup
           Description: App traffic from ALB only
-      SecurityGroupEgress:
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
-          CidrIp: 0.0.0.0/0
-          Description: HTTPS egress (ECR/logs/STS via VPC endpoints; 0.0.0.0/0 scoped by routing, no NAT needed for these calls)
       Tags:
         - Key: Name
           Value: !Sub "${ProjectName}-ecs-task-sg"
